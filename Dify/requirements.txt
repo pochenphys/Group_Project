@@ -1,0 +1,8 @@
+flask
+requests
+python-dotenv
+line-bot-sdk
+Pillow
+google-auth
+PyMySQL
+gunicorn

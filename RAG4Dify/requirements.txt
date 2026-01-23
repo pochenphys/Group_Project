@@ -1,0 +1,6 @@
+flask
+python-dotenv
+langchain-google-genai
+pinecone
+gunicorn
+requests
