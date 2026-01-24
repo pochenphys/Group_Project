@@ -222,7 +222,7 @@ CLOUD_RUN_URL = os.getenv('CLOUD_RUN_URL', 'https://line-bot-router-108142551418
 # 自製食譜後端 URL (Tibame line-service)
 CUSTOM_RECIPE_URL = os.getenv('CUSTOM_RECIPE_URL', 'https://line-service-1081425514180.asia-northeast1.run.app')
 
-# RAG Service URL (用於偏好紀錄)
+# RAG Service URL (用於偏好記錄)
 RAG_API_URL = os.getenv('RAG_API_URL', 'https://rag-imagen4-service-1081425514180.asia-northeast1.run.app')
 
 # 初始化 LINE 客戶端
@@ -236,7 +236,7 @@ user_state = {}
 # AI 功能映射
 AI_FUNCTIONS = {
     'recipe': '食譜',
-    'record': '紀錄',
+    'record': '記錄',
     'view': '查看',
     'delete': '刪除'
 }
@@ -263,13 +263,13 @@ def create_ai_carousel_menu() -> List[Dict]:
             ]
         },
         {
-            'thumbnailImageUrl': 'https://via.placeholder.com/300x200/4ECDC4/FFFFFF?text=紀錄',
-            'title': '紀錄功能',
+            'thumbnailImageUrl': 'https://via.placeholder.com/300x200/4ECDC4/FFFFFF?text=記錄',
+            'title': '記錄功能',
             'text': '上傳食物圖片，記錄食物名稱和入庫時間',
             'actions': [
                 {
                     'type': 'postback',
-                    'label': '選擇紀錄',
+                    'label': '選擇記錄',
                     'data': 'ai_function=record'
                 }
             ]
@@ -427,7 +427,7 @@ def handle_home_command(user_id: str, reply_token: str):
     welcome_message = (
         "🏠 歡迎使用 LINE Bot！\n\n"
         "請選擇功能：\n"
-        "• 輸入「AI」- 使用 AI 功能（食譜、紀錄、查看、刪除）\n"
+        "• 輸入「AI」- 使用 AI 功能（食譜、記錄、查看、刪除）\n"
         "• 輸入「自製」- 使用自製食譜功能\n\n"
         "💡 提示：\n"
         "• 輸入「主頁」隨時返回此選單"
@@ -840,7 +840,7 @@ def webhook():
                 postback_data = event.get('postback', {}).get('data', '')
                 params = dict(parse_qsl(postback_data))
                 
-                # 處理偏好紀錄 (想煮/不想煮)
+                # 處理偏好記錄 (想煮/不想煮)
                 action = params.get('action')
                 recipe_id = params.get('id')
                 
@@ -849,7 +849,7 @@ def webhook():
                     line_client.reply_messages(reply_token, [{'type': 'text', 'text': "👨‍🍳 太棒了！已將您的偏好記錄下來！"}])
                     continue
                 elif action == 'dislike':
-                    # 不想煮 -> 這裡可以選擇是否也要紀錄 negative feedback，目前 RAG 只有 api/like
+                    # 不想煮 -> 這裡可以選擇是否也要記錄 negative feedback，目前 RAG 只有 api/like
                     # 我們先回覆確認訊息
                     # 為了之後能從各後端拿推薦，這裡我們讓它繼續往下走，讓後端處理推薦
                     pass
@@ -857,7 +857,24 @@ def webhook():
                 if postback_data.startswith('ai_function='):
                     function_name = postback_data.split('=')[1]
                     user_state[user_id] = f'ai_{function_name}'
-                    # 模擬一個文字訊息給後端來啟動功能
+                    
+                    # 如果是食譜功能，在 middle.py 中發送提示消息，不轉發到後端
+                    if function_name == 'recipe':
+                        guide_message = (
+                            "🍳 食譜功能已啟用！\n\n"
+                            "📸 請上傳您想要製作的食物圖片，我會為您：\n"
+                            "• 分析圖片中的食材\n"
+                            "• 提供詳細的食譜步驟\n"
+                            "• 建議烹飪方法和技巧\n\n"
+                            "請直接上傳食物圖片即可開始！\n\n"
+                            "💡 提示：\n"
+                            "• 輸入其他功能關鍵字可切換功能\n"
+                            "• 輸入「退出」可結束食譜功能"
+                        )
+                        line_client.reply_messages(reply_token, [{'type': 'text', 'text': guide_message}])
+                        continue  # 不轉發"食譜功能"提示詞到後端
+                    
+                    # 其他功能：模擬一個文字訊息給後端來啟動功能
                     event = {
                         'type': 'message',
                         'message': {'type': 'text', 'text': AI_FUNCTIONS[function_name] + '功能'},
@@ -881,20 +898,38 @@ def webhook():
             
             backends = []
             if is_image:
-                # 圖片預設進入食譜流
-                user_state[user_id] = 'ai_recipe'
-                backends = [CLOUD_RUN_URL, CUSTOM_RECIPE_URL]
+                # 圖片事件：只有在使用者已切換進食譜功能(ai_recipe)時，才會送到 CUSTOM_RECIPE_URL
+                # 其他狀態（例如記錄/查看/刪除）只送 CLOUD_RUN_URL，避免觸發 line-service 的文字推薦
+                current_state = user_state.get(user_id, 'main')
+                if current_state == 'ai_recipe':
+                    backends = [CLOUD_RUN_URL, CUSTOM_RECIPE_URL]
+                else:
+                    backends = [CLOUD_RUN_URL]
             elif event_type == 'message' and event['message']['type'] == 'text':
                 text = event['message']['text'].strip()
-                # 專屬指令檢查 (紀錄、查看、查詢、刪除)
-                exclusive_keywords = ['紀錄', '查看', '查詢', '刪除']
+                # 專屬指令檢查 (記錄、查看、查詢、刪除)
+                exclusive_keywords = ['記錄', '查看', '查詢', '刪除']
                 if any(k in text for k in exclusive_keywords):
                     print(f"[Routing] Exclusive route to Router for command: {text}")
                     backends = [CLOUD_RUN_URL]
-                elif '食譜功能' in text:
-                    # 食譜功能請求
-                    backends = [CLOUD_RUN_URL, CUSTOM_RECIPE_URL]
-                    print(f"[Routing] Recipe function -> {len(backends)} 個服務")
+                elif '食譜功能' in text or text in ['食譜', 'recipe', 'Recipe', 'RECIPE', '開始食譜', '使用食譜', '食譜模式']:
+                    # 食譜功能請求：只設置狀態和發送提示，不轉發到後端
+                    user_state[user_id] = 'ai_recipe'
+                    # 發送食譜功能啟用提示
+                    guide_message = (
+                        "🍳 食譜功能已啟用！\n\n"
+                        "📸 請上傳您想要製作的食物圖片，我會為您：\n"
+                        "• 分析圖片中的食材\n"
+                        "• 提供詳細的食譜步驟\n"
+                        "• 建議烹飪方法和技巧\n\n"
+                        "請直接上傳食物圖片即可開始！\n\n"
+                        "💡 提示：\n"
+                        "• 輸入其他功能關鍵字可切換功能\n"
+                        "• 輸入「退出」可結束食譜功能"
+                    )
+                    line_client.reply_messages(reply_token, [{'type': 'text', 'text': guide_message}])
+                    print(f"[Routing] Recipe function activated, waiting for user action (image upload)")
+                    continue  # 不轉發"食譜功能"提示詞到後端，等待用戶上傳圖片
                 else:
                     # 其他文字訊息，根據用戶狀態決定
                     current_state = user_state.get(user_id, 'main')
@@ -907,7 +942,16 @@ def webhook():
                 postback_data = event.get('postback', {}).get('data', '')
                 print(f"[DEBUG] 處理 postback 事件: {postback_data}")
 
-                if 'action=recommend' in postback_data:
+                # --- 明確分流：避免把不同輪盤的 postback 丟錯服務 ---
+                # Dify 上方輪盤：選擇食譜編號
+                if postback_data.startswith('recipe_select='):
+                    backends = [CLOUD_RUN_URL]
+                    print(f"[Routing] Postback recipe_select -> 1 個服務")
+                # line-service 下方輪盤：查看食譜（必須送 CUSTOM_RECIPE_URL 才能回覆）
+                elif postback_data.startswith('action=view') or 'action=view' in postback_data:
+                    backends = [CUSTOM_RECIPE_URL]
+                    print(f"[Routing] Postback view -> 1 個服務")
+                elif 'action=recommend' in postback_data:
                     # 推薦請求：發送到兩個服務
                     backends = [CLOUD_RUN_URL, CUSTOM_RECIPE_URL]
                     print(f"[Routing] Postback recommend -> {len(backends)} 個服務")
@@ -928,10 +972,14 @@ def webhook():
                 if current_state == 'ai_recipe':
                     backends.append(CUSTOM_RECIPE_URL)
 
-            # 檢查是否需要先發送"請稍等"訊息（食譜功能相關）
-            should_send_wait = False
-            if is_image or (event_type == 'postback' and 'action=recommend' in event.get('postback', {}).get('data', '')):
-                should_send_wait = True
+            # 檢查是否需要先發送"請稍等"訊息（只針對食譜相關）
+            # - 圖片：僅在 ai_recipe 狀態才發送（避免記錄功能也多打一個 push）
+            # - 再推薦：仍維持發送
+            current_state = user_state.get(user_id, 'main')
+            should_send_wait = (
+                (is_image and current_state == 'ai_recipe')
+                or (event_type == 'postback' and 'action=recommend' in event.get('postback', {}).get('data', ''))
+            )
 
             # 如果是食譜相關，立即用 push 發送"請稍等"
             if should_send_wait:
@@ -941,6 +989,8 @@ def webhook():
 
             all_messages = []
             results_data = {} # 暫存 API 回傳原始數據
+            cloud_run_messages = []      # 存儲 CLOUD_RUN_URL 的消息
+            custom_recipe_messages = []  # 存儲 CUSTOM_RECIPE_URL 的消息
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(backends)) as executor:
                 # 調用 API 並獲取回應對象
@@ -968,11 +1018,23 @@ def webhook():
                         print(f"[DEBUG] {url.split('/')[-1]} 返回 {len(msgs)} 條訊息")
                         for i, msg in enumerate(msgs):
                             print(f"[DEBUG]   訊息 {i+1}: type={msg.get('type', 'unknown')}")
-                        all_messages.extend(msgs)
+                        
+                        # 根據 URL 分別存儲消息，確保順序
+                        if url == CLOUD_RUN_URL:
+                            cloud_run_messages.extend(msgs)
+                        elif url == CUSTOM_RECIPE_URL:
+                            custom_recipe_messages.extend(msgs)
+                        else:
+                            # 其他 URL 的消息也加入（如果有）
+                            all_messages.extend(msgs)
+                        
                         if raw_data:
                             results_data[url] = raw_data
                     except Exception as e:
                         print(f"[ERROR] 處理 {url} 的結果時出錯: {e}")
+            
+            # 按固定順序合併：CLOUD_RUN_URL 在前，CUSTOM_RECIPE_URL 在後
+            all_messages = cloud_run_messages + custom_recipe_messages + all_messages
 
             # --- 自動儲存 Dify 食譜到 RAG 向量庫 ---
             if CLOUD_RUN_URL in results_data:
@@ -1034,7 +1096,7 @@ def index():
     <h2>功能：</h2>
     <ul>
         <li>🏠 主選單</li>
-        <li>🤖 AI 功能（食譜、紀錄、查看、刪除）</li>
+        <li>🤖 AI 功能（食譜、記錄、查看、刪除）</li>
         <li>🍳 自製食譜功能</li>
     </ul>
     '''

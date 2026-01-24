@@ -29,6 +29,7 @@ from Line2Dify import (
     temp_image_lock,
     user_recipe_storage,
     user_text_storage,
+    user_food_storage,
     recipe_storage_lock
 )
 
@@ -426,26 +427,10 @@ class FunctionRouter:
         Returns:
             bool: 是否成功處理
         """
-        c = client or line_client
         # 設定用戶功能狀態為食譜模式
+        # 提示消息已移至 middle.py 處理
         user_function_state[user_id] = 'recipe'
-        
-        guide_message = (
-            "🍳 食譜功能已啟用！\n\n"
-            "📸 請上傳您想要製作的食物圖片，我會為您：\n"
-            "• 分析圖片中的食材\n"
-            "• 提供詳細的食譜步驟\n"
-            "• 建議烹飪方法和技巧\n\n"
-            "請直接上傳食物圖片即可開始！\n\n"
-            "💡 提示：\n"
-            "• 輸入其他功能關鍵字可切換功能\n"
-            "• 輸入「退出」可結束食譜功能"
-        )
-        
-        if reply_token:
-            return c.reply_message(reply_token, guide_message)
-        else:
-            return c.send_text_message(user_id, guide_message)
+        return True
     
     def handle_record_function(self, user_id: str, reply_token: Optional[str], client=None) -> bool:
         """
@@ -1524,7 +1509,9 @@ def process_message_api():
                                                             "action": {
                                                                 "type": "postback",
                                                                 "label": "🎲 再推薦一道菜",
-                                                                "data": f"action=recommend&user_id={user_id}&ingr={text_content}"
+                                                                # 只帶 user_id；推薦時會從 user_text_storage 取回第一次的 text
+                                                                # 避免把大段文字塞進 querystring 導致長度/編碼問題
+                                                                "data": f"action=recommend&user_id={user_id}"
                                                             }
                                                         }
                                                     ]
@@ -1553,9 +1540,12 @@ def process_message_api():
                     # 使用第二個 DIFY 處理推薦請求，不使用 retry 參數
                     print(f"[DEBUG] Processing action=recommend for user: {user_id_param}")
                     try:
+                        # 優先用第一個 Dify 回傳並暫存的 food 當作第二個 Dify 的 text 變數
+                        food_text = user_food_storage.get(user_id_param, '')
                         recommend_messages = recipe_flow_controller.process_recommend_request_second_dify(
                             user_id_param, # 不使用 retry 參數
-                            dify_client_second=dify_client_second
+                            dify_client_second=dify_client_second,
+                            text=food_text
                         )
                         print(f"[DEBUG] Second DIFY returned {len(recommend_messages)} messages")
                         messages.extend(recommend_messages)
@@ -1570,9 +1560,9 @@ def process_message_api():
                     # 處理正面回饋
                     messages.append({'type': 'text', 'text': '👨‍🍳 太棒了！已記錄您的喜好！'})
 
-                elif action == 'dislike':
-                    # 處理負面回饋
-                    messages.append({'type': 'text', 'text': '收到，下次會避免推薦類似菜色！'})
+                # elif action == 'dislike':
+                #     # 處理負面回饋
+                #     messages.append({'type': 'text', 'text': '收到，下次會避免推薦類似菜色！'})
 
         # DEBUG: Print final messages
         print(f"[DEBUG] LINE_Bot_Router returns {len(messages)} messages")

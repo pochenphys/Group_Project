@@ -74,12 +74,15 @@ coverage.xml
 .hypothesis/
 
 # Machine Learning / AI Models (if you don't want to commit large model files)
-# 取消註釋下面這行如果你不想上傳模型文件
-# *.pt
-# *.pth
-# *.h5
-# *.pkl
-# *.joblib
+# GitHub 單檔限制 100MB；建議用 Git LFS 或忽略模型檔
+*.pt
+*.pth
+*.h5
+*.pkl
+*.joblib
+*.onnx
+*.ckpt
+*.safetensors
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -95,6 +98,5 @@ yarn-debug.log*
 yarn-error.log*
 
 # Git
-.git/
-.gitignore
-git rm --cached -r Tibame_group_project/
+# .git/ 不需要忽略（本來就不會被追蹤）
+# .gitignore 也不建議忽略（要正常提交忽略規則）

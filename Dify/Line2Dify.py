@@ -86,6 +86,8 @@ temp_image_counter = 0
 # 格式: {user_id: {'dish_1': '...', 'dish_2': '...', 'dish_3': '...'}}
 user_recipe_storage = {}
 user_text_storage = {}
+# 第一個 Dify 額外回傳的 food 暫存（供再推薦傳給第二個 Dify）
+user_food_storage = {}
 recipe_storage_lock = threading.Lock()
 
 
@@ -2086,6 +2088,7 @@ class MessageFlowController:
             dish_1 = outputs.get('dish_1', '') if isinstance(outputs, dict) else ''
             dish_2 = outputs.get('dish_2', '') if isinstance(outputs, dict) else ''
             dish_3 = outputs.get('dish_3', '') if isinstance(outputs, dict) else ''
+            food = outputs.get('food', '') if isinstance(outputs, dict) else ''
             
             # 將 \n 轉換為實際換行符號
             if text:
@@ -2102,8 +2105,8 @@ class MessageFlowController:
             # 儲存對話 ID
             self.update_conversation_id(user_id, new_conversation_id)
             
-            # 存儲 text 和食譜數據（用於 Postback 事件）
-            global user_recipe_storage, recipe_storage_lock, user_text_storage
+            # 存儲 text/food 和食譜數據（用於 Postback 事件 / 再推薦）
+            global user_recipe_storage, recipe_storage_lock, user_text_storage, user_food_storage
             with recipe_storage_lock:
                 user_recipe_storage[user_id] = {
                     'dish_1': dish_1,
@@ -2111,6 +2114,7 @@ class MessageFlowController:
                     'dish_3': dish_3
                 }
                 user_text_storage[user_id] = text
+                user_food_storage[user_id] = food
                 
                 # 設置清理定時器（30分鐘後刪除）
                 def cleanup_recipe():
@@ -2120,6 +2124,8 @@ class MessageFlowController:
                             del user_recipe_storage[user_id]
                         if user_id in user_text_storage:
                             del user_text_storage[user_id]
+                        if user_id in user_food_storage:
+                            del user_food_storage[user_id]
                 
                 threading.Thread(target=cleanup_recipe, daemon=True).start()
             
@@ -2413,16 +2419,18 @@ class MessageFlowController:
             dish_1 = outputs.get('dish_1', '')
             dish_2 = outputs.get('dish_2', '')
             dish_3 = outputs.get('dish_3', '')
+            food = outputs.get('food', '')
             
             # 儲存對話 ID
             new_conversation_id = dify_response.get('conversation_id')
             self.update_conversation_id(user_id, new_conversation_id)
             
             # 儲存食譜數據 (非常重要)
-            global user_recipe_storage, recipe_storage_lock, user_text_storage
+            global user_recipe_storage, recipe_storage_lock, user_text_storage, user_food_storage
             with recipe_storage_lock:
                 user_recipe_storage[user_id] = {'dish_1': dish_1, 'dish_2': dish_2, 'dish_3': dish_3}
                 user_text_storage[user_id] = text
+                user_food_storage[user_id] = food
 
             # 4. 構建消息對象
             messages = []
@@ -2822,7 +2830,13 @@ class MessageFlowController:
             else:
                 self.line_client.send_text_message(user_id, error_msg)
 
-    def process_recommend_request_second_dify(self, user_id: str, retry: bool = True, dify_client_second: DifyAPIClient = None) -> List[Dict]:
+    def process_recommend_request_second_dify(
+        self,
+        user_id: str,
+        retry: bool = True,
+        dify_client_second: DifyAPIClient = None,
+        text: Optional[str] = None
+    ) -> List[Dict]:
         """
         使用第二個 DIFY 處理推薦請求
 
@@ -2830,6 +2844,7 @@ class MessageFlowController:
             user_id: 用戶 ID
             retry: 是否跳過食材辨識，直接進行推薦（已棄用，總是使用相同邏輯）
             dify_client_second: 第二個 DIFY 客戶端
+            text: 供第二個 DIFY 工作流使用的文字輸入（例如：碳足跡/熱量摘要）
 
         Returns:
             List[Dict]: 返回的消息列表
@@ -2838,15 +2853,18 @@ class MessageFlowController:
             return [{"type": "text", "text": "系統配置錯誤，請聯繫管理員。"}]
 
         # 將全域宣告移到函數開頭
-        global user_recipe_storage, recipe_storage_lock, user_text_storage
+        global user_recipe_storage, recipe_storage_lock, user_text_storage, user_food_storage
 
         try:
             # 1. 第二個 DIFY 是工作流，不需要對話上下文，直接發送請求
+            #    若未提供 text，優先取用第一次 Dify 回傳的 food；其次取用第一次的 text（例如碳足跡/熱量摘要）
+            if text is None:
+                text = user_food_storage.get(user_id, '') or user_text_storage.get(user_id, '')
 
             # 2. 發送推薦請求到第二個 DIFY（工作流 API 不使用 conversation_id）
-            # 直接發送空文字訊息，不使用圖片輸入，不使用 retry 參數
+            # 將 text 作為工作流輸入變數（inputs['text']）
             dify_response = dify_client_second.send_message_with_retry(
-                text="",
+                text=text or "",
                 conversation_id=None,  # 工作流不使用 conversation_id
                 user_id=user_id
             )
