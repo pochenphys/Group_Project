@@ -910,6 +910,13 @@ def webhook():
                 # 專屬指令檢查 (記錄、查看、查詢、刪除)
                 exclusive_keywords = ['記錄', '查看', '查詢', '刪除']
                 if any(k in text for k in exclusive_keywords):
+                    # 同步更新 user_state，避免下次上傳圖片時仍誤判為 ai_recipe 而 call 兩個 URL
+                    if '記錄' in text:
+                        user_state[user_id] = 'ai_record'
+                    elif '查看' in text or '查詢' in text:
+                        user_state[user_id] = 'ai_view'
+                    elif '刪除' in text:
+                        user_state[user_id] = 'ai_delete'
                     print(f"[Routing] Exclusive route to Router for command: {text}")
                     backends = [CLOUD_RUN_URL]
                 elif '食譜功能' in text or text in ['食譜', 'recipe', 'Recipe', 'RECIPE', '開始食譜', '使用食譜', '食譜模式']:
