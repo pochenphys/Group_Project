@@ -1669,9 +1669,10 @@ def process_message_api():
             elif msg_type == 'image':
                 current_function = user_function_state.get(user_id)
                 if current_function == 'record':
-                    # 只有在明確處於紀錄狀態時才執行紀錄
-                    add_image_to_buffer(event)
-                    messages.append({'type': 'text', 'text': '📸 已收到圖片，正在為您記錄到資料庫...'})
+                    # 只有在明確處於紀錄狀態時才執行紀錄；僅在「第一張」時回覆一次，避免連傳多張時重複回覆
+                    ok, buffer_size = add_image_to_buffer(event)
+                    if ok and buffer_size == 1:
+                        messages.append({'type': 'text', 'text': '📸 已收到圖片，正在為您記錄到資料庫...'})
                 else:
                     # 其他所有情況都預設執行食譜流 (Dify 分析)
                     user_function_state[user_id] = 'recipe'

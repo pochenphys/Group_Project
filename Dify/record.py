@@ -332,7 +332,7 @@ def process_buffered_images_timeout(user_id: str):
             threading.Thread(target=process_images, args=(user_id, events), daemon=True).start()
 
 
-def add_image_to_buffer(event: Dict) -> bool:
+def add_image_to_buffer(event: Dict):
     """
     將圖片事件加入緩衝區（支援多張圖片緩衝）
     
@@ -340,12 +340,12 @@ def add_image_to_buffer(event: Dict) -> bool:
         event: LINE 圖片事件
     
     Returns:
-        bool: 是否成功加入緩衝區
+        tuple: (是否成功, 加入後緩衝區張數)，方便呼叫方只對「第一張」回覆一次
     """
     user_id = event.get('user_id')
     if not user_id:
         print("錯誤: 缺少使用者 ID")
-        return False
+        return (False, 0)
     
     # 檢查是否有 imageSet 資訊（LINE 多張圖片標記）
     message = event.get('message', {})
@@ -368,7 +368,7 @@ def add_image_to_buffer(event: Dict) -> bool:
                     del user_timers[user_id]
                 # 在背景線程中處理
                 threading.Thread(target=process_images, args=(user_id, events), daemon=True).start()
-                return True
+                return (True, buffer_size)
         
         # 取消舊的定時器（如果存在）
         if user_id in user_timers:
@@ -379,7 +379,7 @@ def add_image_to_buffer(event: Dict) -> bool:
         timer.start()
         user_timers[user_id] = timer
     
-    return True
+    return (True, buffer_size)
 
 
 def process_images(user_id: str, events: List[Dict]):
