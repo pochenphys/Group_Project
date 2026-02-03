@@ -24,6 +24,42 @@ LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 LINE_CONTENT_URL = 'https://api-data.line.me/v2/bot/message/{message_id}/content'
 
 
+def _sanitize_message_for_line(msg: Dict) -> Dict:
+    """
+    整理單則訊息以符合 LINE Messaging API 格式，避免 400 Bad Request。
+    - type=text 時：text 必須為字串。
+    - type=flex 時：只保留 type, altText, contents，不帶 text。
+    """
+    if not isinstance(msg, dict):
+        return {'type': 'text', 'text': str(msg)}
+    msg_type = msg.get('type', 'text')
+    if msg_type == 'text':
+        text_val = msg.get('text', '')
+        return {'type': 'text', 'text': text_val if isinstance(text_val, str) else str(text_val)}
+    if msg_type == 'flex':
+        return {
+            'type': 'flex',
+            'altText': msg.get('altText', 'Flex message'),
+            'contents': msg.get('contents', {})
+        }
+    if msg_type == 'image':
+        out = {'type': 'image', 'originalContentUrl': msg.get('originalContentUrl', '')}
+        if msg.get('previewImageUrl'):
+            out['previewImageUrl'] = msg['previewImageUrl']
+        return out
+    if msg_type == 'template':
+        return {
+            'type': 'template',
+            'altText': msg.get('altText', 'Template'),
+            'template': msg.get('template', {})
+        }
+    # 其他類型：複製但移除可能造成 invalid 的 text 鍵
+    out = {k: v for k, v in msg.items() if k != 'text'}
+    if 'text' in msg and msg_type == 'text':
+        out['text'] = msg['text'] if isinstance(msg['text'], str) else str(msg['text'])
+    return out if out.get('type') else {'type': 'text', 'text': str(msg)}
+
+
 class LINEWebhookHandler:
     """處理 LINE Webhook 請求"""
     
@@ -176,7 +212,7 @@ class LINEAPIClient:
         for i, msg in enumerate(messages[:5]):  # 只顯示前5條，因為 LINE 限制最多5條
             print(f"[DEBUG]   訊息 {i+1}: type={msg.get('type', 'unknown')}")
             if msg.get('type') == 'text':
-                text_content = msg.get('text', '')
+                text_content = str(msg.get('text', ''))
                 print(f"[DEBUG]     文字內容: {text_content[:100]}{'...' if len(text_content) > 100 else ''}")
             elif msg.get('type') == 'image':
                 print(f"[DEBUG]     圖片URL: {msg.get('originalContentUrl', 'N/A')}")
@@ -187,9 +223,10 @@ class LINEAPIClient:
 
         try:
             url = LINE_REPLY_URL
+            sanitized = [_sanitize_message_for_line(m) for m in messages[:5]]
             payload = {
                 'replyToken': reply_token,
-                'messages': messages[:5]  # Line 限制最多 5 則
+                'messages': sanitized  # Line 限制最多 5 則，且已整理成 LINE API 合法格式
             }
 
             print(f"[DEBUG] 發送 LINE API 請求到: {url}")
@@ -200,12 +237,13 @@ class LINEAPIClient:
                 print(f"[DEBUG] LINE API 回應成功")
                 return True
             else:
-                print(f"[DEBUG] LINE API 回應失敗，內容: {response.text[:200]}")
+                err_body = (response.text or "")[:1000]
+                print(f"[ERROR] LINE API 回應失敗 status={response.status_code}, body={err_body}")
                 response.raise_for_status()
                 return True
 
         except Exception as e:
-            print(f"[ERROR] 回覆多則訊息失敗: {str(e)}")
+            print(f"[ERROR] 回覆多則訊息失敗: {type(e).__name__}: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -954,6 +992,10 @@ def webhook():
                 if postback_data.startswith('recipe_select='):
                     backends = [CLOUD_RUN_URL]
                     print(f"[Routing] Postback recipe_select -> 1 個服務")
+                # Router 查看/刪除功能：分頁與一鍵刪除（送 CLOUD_RUN_URL）
+                elif 'action=view_page' in postback_data or 'action=delete_page' in postback_data or 'action=delete_record' in postback_data:
+                    backends = [CLOUD_RUN_URL]
+                    print(f"[Routing] Postback view_page/delete_page/delete_record -> 1 個服務 (Router)")
                 # line-service 下方輪盤：查看食譜（必須送 CUSTOM_RECIPE_URL 才能回覆）
                 elif postback_data.startswith('action=view') or 'action=view' in postback_data:
                     backends = [CUSTOM_RECIPE_URL]
@@ -1069,7 +1111,10 @@ def webhook():
             if all_messages:
                 print(f"[DEBUG] 開始用 reply token 發送訊息給用戶 {user_id}")
                 success = line_client.reply_messages(reply_token, all_messages)
-                print(f"[DEBUG] Reply 發送結果: {'成功' if success else '失敗'}")
+                if success:
+                    print(f"[DEBUG] Reply 發送結果: 成功")
+                else:
+                    print(f"[DEBUG] Reply 發送結果: 失敗（請查看上方 [ERROR] LINE API 或 回覆多則訊息失敗 的日誌）")
             else:
                 print(f"[DEBUG] 沒有訊息，執行 fallback 邏輯")
                 # Fallback: 如果都沒回傳，且沒進入主選單，顯示當前狀態提示

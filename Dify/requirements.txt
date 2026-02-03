@@ -1,8 +1,8 @@
-flask
-requests
-python-dotenv
-line-bot-sdk
-Pillow
-google-auth
-PyMySQL
-gunicorn
+flask>=3.0.0,<4
+requests>=2.31.0,<3
+python-dotenv>=1.0.0,<2
+line-bot-sdk>=3.0.0,<4
+Pillow>=10.0.0,<11
+google-auth>=2.23.0,<3
+PyMySQL>=1.1.0,<2
+gunicorn>=21.2.0,<23

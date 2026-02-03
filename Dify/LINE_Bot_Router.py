@@ -80,6 +80,374 @@ user_wait_message_sent = {}
 # 格式: {user_id: {編號: {'id': record_id, 'food_name': ..., 'quantity': ..., 'storage_time': ...}}}
 user_delete_records_mapping = {}
 
+# ===== Flex message builders =====
+def _format_storage_time(storage_time) -> str:
+    """Format storage_time consistently for UI."""
+    if not storage_time:
+        return "未指定"
+    try:
+        if isinstance(storage_time, datetime):
+            return storage_time.strftime("%Y-%m-%d %H:%M:%S")
+        return str(storage_time)
+    except Exception:
+        return "未指定"
+
+
+def build_delete_records_flex(username: str, records: List[Dict], *, limit: int = 5, page: int = 1) -> Dict:
+    """
+    Build a Flex message listing records with one-click delete buttons.
+    Supports pagination.
+    """
+    total = len(records or [])
+    page = max(1, page)
+    start = (page - 1) * limit
+    end = start + limit
+    shown = records[start:end] if records else []
+
+    items = []
+    for record in shown:
+        food_name = record.get('food_name', '未知')
+        quantity = record.get('quantity')
+        storage_time = _format_storage_time(record.get('storage_time', ''))
+        record_id = record.get('id')
+
+        qty_text = f"{quantity}" if quantity is not None else "未指定"
+        right = {
+            "type": "text",
+            "text": f"x {qty_text}",
+            "size": "sm",
+            "color": "#666666",
+            "align": "end",
+            "gravity": "center",
+            "flex": 0
+        }
+
+        # If id is missing, show disabled-looking label instead of a button.
+        if record_id is not None:
+            right = {
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "action": {
+                    "type": "postback",
+                    "label": "刪除",
+                    "data": f"action=delete_record&id={record_id}&page={page}"
+                }
+            }
+
+        items.append({
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "margin": "md",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": food_name,
+                            "weight": "bold",
+                            "size": "md",
+                            "wrap": True,
+                            "flex": 1
+                        },
+                        right
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": f"入庫時間：{storage_time}",
+                    "size": "xs",
+                    "color": "#999999",
+                    "wrap": True
+                },
+                {"type": "separator", "margin": "md"}
+            ]
+        })
+
+    footer_note = ""
+    max_page = max(1, (total + limit - 1) // limit)
+    if total > limit:
+        footer_note = f"（第 {page}/{max_page} 頁，共 {total} 筆）"
+    else:
+        footer_note = f"（共 {total} 筆）"
+
+    pager_buttons = []
+    if page > 1:
+        pager_buttons.append({
+            "type": "button",
+            "style": "secondary",
+            "height": "sm",
+            "action": {
+                "type": "postback",
+                "label": "上一頁",
+                "data": f"action=delete_page&page={page-1}"
+            }
+        })
+    if end < total:
+        pager_buttons.append({
+            "type": "button",
+            "style": "primary",
+            "height": "sm",
+            "action": {
+                "type": "postback",
+                "label": "下一頁",
+                "data": f"action=delete_page&page={page+1}"
+            }
+        })
+
+    return {
+        "type": "flex",
+        "altText": "刪除記錄",
+        "contents": {
+            "type": "bubble",
+            "size": "giga",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "🗑️ 刪除功能",
+                        "weight": "bold",
+                        "size": "lg"
+                    },
+                    {
+                        "type": "text",
+                        "text": f"📋 {username} 的記錄（共 {total} 筆）",
+                        "size": "sm",
+                        "color": "#666666",
+                        "wrap": True
+                    },
+                    {"type": "separator", "margin": "md"},
+                    *items,
+                    *([
+                        {
+                            "type": "text",
+                            "text": footer_note,
+                            "size": "xs",
+                            "color": "#999999",
+                            "wrap": True
+                        }
+                    ] if footer_note else []),
+                    *([
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "spacing": "md",
+                            "contents": pager_buttons
+                        }
+                    ] if pager_buttons else []),
+                    {
+                        "type": "text",
+                        "text": "提示：也可直接輸入「退出」結束刪除模式",
+                        "size": "xs",
+                        "color": "#999999",
+                        "wrap": True
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _format_elapsed(storage_time) -> str:
+    """Human-friendly elapsed time string (Taiwan time)."""
+    if not storage_time:
+        return ""
+    try:
+        dt = None
+        if isinstance(storage_time, datetime):
+            dt = storage_time
+        else:
+            # Try parse common formats
+            raw = str(storage_time)
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"]:
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    break
+                except Exception:
+                    continue
+            if dt is None:
+                try:
+                    dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                except Exception:
+                    return ""
+
+        # Normalize timezone
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TAIWAN_TZ)
+        now = datetime.now(TAIWAN_TZ)
+        delta = now - dt.astimezone(TAIWAN_TZ)
+        if delta.total_seconds() < 0:
+            delta = timedelta(0)
+
+        if delta.total_seconds() < 60:
+            return "剛剛"
+        minutes = int(delta.total_seconds() // 60)
+        if minutes < 60:
+            return f"{minutes} 分鐘前"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours} 小時前"
+        days = hours // 24
+        return f"{days} 天前"
+    except Exception:
+        return ""
+
+
+def build_view_records_flex(username: str, records: List[Dict], *, limit: int = 5, page: int = 1) -> Dict:
+    """Build a Flex message listing records for view mode with pagination."""
+    total = len(records or [])
+    page = max(1, page)
+    start = (page - 1) * limit
+    end = start + limit
+    shown = records[start:end] if records else []
+
+    items = []
+    for record in shown:
+        food_name = record.get('food_name', '未知')
+        quantity = record.get('quantity')
+        storage_time_raw = record.get('storage_time', '')
+        storage_time = _format_storage_time(storage_time_raw)
+        elapsed = _format_elapsed(storage_time_raw)
+
+        qty_text = f"{quantity}" if quantity is not None else "未指定"
+        subtitle = f"入庫時間：{storage_time}"
+        if elapsed:
+            subtitle += f"（{elapsed}）"
+
+        items.append({
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "xs",
+            "margin": "md",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": food_name,
+                            "weight": "bold",
+                            "size": "md",
+                            "wrap": True,
+                            "flex": 1
+                        },
+                        {
+                            "type": "text",
+                            "text": f"x {qty_text}",
+                            "size": "sm",
+                            "color": "#666666",
+                            "align": "end",
+                            "gravity": "center",
+                            "flex": 0
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": subtitle,
+                    "size": "xs",
+                    "color": "#999999",
+                    "wrap": True
+                },
+                {"type": "separator", "margin": "md"}
+            ]
+        })
+
+    footer_note = ""
+    max_page = max(1, (total + limit - 1) // limit)
+    if total > limit:
+        footer_note = f"（第 {page}/{max_page} 頁，共 {total} 筆）"
+    else:
+        footer_note = f"（共 {total} 筆）"
+
+    # Pagination buttons
+    pager_buttons = []
+    if page > 1:
+        pager_buttons.append({
+            "type": "button",
+            "style": "secondary",
+            "height": "sm",
+            "action": {
+                "type": "postback",
+                "label": "上一頁",
+                "data": f"action=view_page&page={page-1}"
+            }
+        })
+    if end < total:
+        pager_buttons.append({
+            "type": "button",
+            "style": "primary",
+            "height": "sm",
+            "action": {
+                "type": "postback",
+                "label": "下一頁",
+                "data": f"action=view_page&page={page+1}"
+            }
+        })
+
+    return {
+        "type": "flex",
+        "altText": "查看記錄",
+        "contents": {
+            "type": "bubble",
+            "size": "giga",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "📋 查看功能",
+                        "weight": "bold",
+                        "size": "lg"
+                    },
+                    {
+                        "type": "text",
+                        "text": f"{username} 的記錄（共 {total} 筆）",
+                        "size": "sm",
+                        "color": "#666666",
+                        "wrap": True
+                    },
+                    {"type": "separator", "margin": "md"},
+                    *items,
+                    *([
+                        {
+                            "type": "text",
+                            "text": footer_note,
+                            "size": "xs",
+                            "color": "#999999",
+                            "wrap": True
+                        }
+                    ] if footer_note else []),
+                    *([
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "spacing": "md",
+                            "contents": pager_buttons
+                        }
+                    ] if pager_buttons else []),
+                    {
+                        "type": "text",
+                        "text": "提示：輸入「記錄功能 / 刪除功能」可切換模式",
+                        "size": "xs",
+                        "color": "#999999",
+                        "wrap": True
+                    }
+                ]
+            }
+        }
+    }
+
+
 # 功能關鍵字映射
 FUNCTION_KEYWORDS = {
     'recipe': ['食譜功能', '食譜', 'recipe', 'Recipe', 'RECIPE', '開始食譜', '使用食譜', '食譜模式'],
@@ -494,80 +862,8 @@ class FunctionRouter:
                     "使用「記錄功能」來記錄食物吧！"
                 )
             else:
-                # 有記錄，格式化列表
-                message = f"📋 {username} 的記錄\n\n"
-                message += f"共 {len(records)} 筆記錄：\n\n"
-                
-                for i, record in enumerate(records, 1):
-                    food_name = record.get('food_name', '未知')
-                    quantity = record.get('quantity')
-                    storage_time = record.get('storage_time', '')
-                    
-                    # 格式化數量
-                    quantity_str = f"{quantity}" if quantity is not None else "未指定"
-                    
-                    # 格式化時間和計算已購買時間
-                    time_str = "未指定"
-                    elapsed_str = "無法計算"
-                    
-                    if storage_time:
-                        # 將 storage_time 轉換為 datetime 對象
-                        purchase_datetime = None
-                        
-                        if isinstance(storage_time, datetime):
-                            purchase_datetime = storage_time
-                            time_str = storage_time.strftime("%Y-%m-%d %H:%M:%S")
-                        elif isinstance(storage_time, str):
-                            # 嘗試解析字符串時間（多種格式）
-                            time_str = storage_time
-                            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d"]:
-                                try:
-                                    purchase_datetime = datetime.strptime(storage_time, fmt)
-                                    time_str = purchase_datetime.strftime("%Y-%m-%d %H:%M:%S")
-                                    break
-                                except:
-                                    continue
-                        
-                        # 計算已購買時間（從購買時間到現在的距離）
-                        if purchase_datetime:
-                            # 確保 purchase_datetime 使用台灣時區
-                            if purchase_datetime.tzinfo is None:
-                                # 如果沒有時區信息，假設它是台灣時區
-                                purchase_datetime = purchase_datetime.replace(tzinfo=TAIWAN_TZ)
-                            elif purchase_datetime.tzinfo != TAIWAN_TZ:
-                                # 如果有時區但不是台灣時區，轉換為台灣時區
-                                purchase_datetime = purchase_datetime.astimezone(TAIWAN_TZ)
-                            
-                            # 獲取當前台灣時區時間
-                            now = datetime.now(TAIWAN_TZ)
-                            
-                            elapsed = now - purchase_datetime
-                            
-                            # 確保時間差不會變成負數
-                            if elapsed.total_seconds() < 0:
-                                elapsed = timedelta(0)
-                            
-                            # 格式化時間差
-                            if elapsed.days > 0:
-                                elapsed_str = f"{elapsed.days} 天"
-                            elif elapsed.seconds >= 3600:
-                                hours = elapsed.seconds // 3600
-                                elapsed_str = f"{hours} 小時"
-                            elif elapsed.seconds >= 60:
-                                minutes = elapsed.seconds // 60
-                                elapsed_str = f"{minutes} 分鐘"
-                            else:
-                                elapsed_str = "剛剛"
-                    
-                    message += f"{i}. {food_name}\n"
-                    message += f"   數量: {quantity_str}\n"
-                    message += f"   購買時間: {time_str}\n"
-                    message += f"   已購買時間: {elapsed_str}"
-                    # 如果不是最後一條記錄，添加兩個換行符；最後一條只添加一個換行符
-                    if i < len(records):
-                        message += "\n\n"
-                    else:
-                        message += "\n"
+                # 有記錄：改用 Flex message 讓清單更好讀（含分頁）
+                message = build_view_records_flex(username, records, limit=5, page=1)
             
             # 查看功能執行完後，清除用戶狀態（回到初始狀態）
             if user_id in user_function_state:
@@ -625,56 +921,8 @@ class FunctionRouter:
                     "使用「記錄功能」來記錄食物吧！"
                 )
             else:
-                # 有記錄，格式化列表並保存編號映射
-                # 清除舊的映射（如果存在）
-                if user_id in user_delete_records_mapping:
-                    del user_delete_records_mapping[user_id]
-                
-                # 創建新的映射
-                user_delete_records_mapping[user_id] = {}
-                
-                message = f"🗑️ 刪除功能已啟用！\n\n"
-                message += f"📋 {username} 的記錄\n\n"
-                message += f"共 {len(records)} 筆記錄：\n\n"
-                
-                for i, record in enumerate(records, 1):
-                    food_name = record.get('food_name', '未知')
-                    quantity = record.get('quantity')
-                    storage_time = record.get('storage_time', '')
-                    record_id = record.get('id')
-                    
-                    # 保存編號到記錄ID的映射
-                    if record_id:
-                        user_delete_records_mapping[user_id][i] = {
-                            'id': record_id,
-                            'food_name': food_name,
-                            'quantity': quantity,
-                            'storage_time': storage_time
-                        }
-                    
-                    # 格式化數量
-                    quantity_str = f"{quantity}" if quantity is not None else "未指定"
-                    
-                    # 格式化時間
-                    time_str = "未指定"
-                    if storage_time:
-                        if isinstance(storage_time, datetime):
-                            time_str = storage_time.strftime("%Y-%m-%d %H:%M:%S")
-                        elif isinstance(storage_time, str):
-                            time_str = storage_time
-                    
-                    message += f"{i}. {food_name} - 數量: {quantity_str} - 時間: {time_str}\n"
-                
-                message += "\n刪除方式：\n"
-                message += "1️⃣ 按編號刪除：輸入編號即可刪除該記錄\n"
-                message += "   例如：3 （刪除編號 3 的記錄）\n"
-                message += "   或：3 1 （刪除編號 3 的記錄，消耗數量 1）\n\n"
-                message += "2️⃣ 按食品名稱刪除：輸入食品名稱和數量\n"
-                message += "   例如：蘋果 2個\n"
-                message += "   系統會從最舊的記錄開始扣除。\n\n"
-                message += "💡 提示：\n"
-                message += "• 輸入其他功能關鍵字可切換功能\n"
-                message += "• 輸入「退出」可結束刪除功能"
+                # 有記錄：改用 Flex message + 一鍵刪除按鈕（含分頁）
+                message = build_delete_records_flex(username, records, limit=5, page=1)
             
             # 發送訊息
             if reply_token:
@@ -1401,16 +1649,21 @@ def process_message_api():
                 text = message.get('text', '').strip()
                 # 使用 Mock Client 攔截 route_message 的發送
                 collected = []
+                reply_tok = event.get('replyToken')
                 class MockClient:
                     def reply_message(self, token, content):
                         if isinstance(content, str): collected.append({'type': 'text', 'text': content})
                         else: collected.append(content)
                         return True
                     def send_text_message(self, uid, content):
-                        collected.append({'type': 'text', 'text': content})
+                        # 若 content 已是訊息物件（Flex/template 等），直接加入，避免被包成 type=text
+                        if isinstance(content, dict) and content.get('type') in ('flex', 'template', 'image'):
+                            collected.append(content)
+                        else:
+                            collected.append({'type': 'text', 'text': content if isinstance(content, str) else str(content)})
                         return True
                 
-                router.route_message(user_id, text, None, client=MockClient())
+                router.route_message(user_id, text, reply_tok, client=MockClient())
                 messages = collected
             
             elif msg_type == 'image':
@@ -1560,6 +1813,89 @@ def process_message_api():
                     # 處理正面回饋
                     messages.append({'type': 'text', 'text': '👨‍🍳 太棒了！已記錄您的喜好！'})
 
+                elif action == 'delete_record':
+                    # 一鍵刪除記錄：刪除後回傳更新後的 Flex 清單（保留當前頁）
+                    record_id = params.get('id')
+                    try:
+                        current_page = int(params.get('page', '1'))
+                    except Exception:
+                        current_page = 1
+                    try:
+                        rid = int(record_id) if record_id is not None else None
+                    except Exception:
+                        rid = None
+
+                    if not rid:
+                        messages.append({'type': 'text', 'text': '❌ 刪除失敗：缺少或無效的記錄 ID'})
+                    else:
+                        result = delete_food_record_by_id(rid)
+                        if result.get('success'):
+                            messages.append({'type': 'text', 'text': '✅ 已刪除該筆記錄'})
+                        else:
+                            msg = result.get('message', '')
+                            # 已刪除過的按鈕再點：友善提示，不顯示錯誤
+                            if msg and '找不到' in msg and '記錄' in msg:
+                                messages.append({'type': 'text', 'text': '該筆記錄已刪除，請參考下方最新清單。'})
+                            else:
+                                messages.append({'type': 'text', 'text': f"❌ 刪除失敗：{msg or '未知錯誤'}"})
+
+                        # 保持在刪除模式（讓使用者可繼續刪）
+                        user_function_state[user_id] = 'delete'
+
+                        # 回傳更新後清單（同一頁，若頁數超出則回前一頁）
+                        try:
+                            user_profile = get_user_profile(user_id)
+                            username = user_profile.get('displayName', '未知用戶') if user_profile else '未知用戶'
+                            records = query_user_food_records(user_id)
+                            if not records:
+                                messages.append({'type': 'text', 'text': f"📋 {username} 的記錄\n\n目前沒有任何記錄。"})
+                            else:
+                                max_page = max(1, (len(records) + 5 - 1) // 5)
+                                current_page = min(current_page, max_page)
+                                messages.append(build_delete_records_flex(username, records, limit=5, page=current_page))
+                        except Exception as e:
+                            print(f"[ERROR] Failed to build updated delete list: {e}")
+
+                elif action == 'delete_page':
+                    # 刪除清單分頁（舊泡泡的上一頁/下一頁：頁數過期時顯示最新清單）
+                    try:
+                        page = int(params.get('page', '1'))
+                    except Exception:
+                        page = 1
+                    try:
+                        user_profile = get_user_profile(user_id)
+                        username = user_profile.get('displayName', '未知用戶') if user_profile else '未知用戶'
+                        records = query_user_food_records(user_id)
+                        limit = 5
+                        max_page = max(1, (len(records) + limit - 1) // limit) if records else 1
+                        if page < 1 or page > max_page:
+                            messages.append({'type': 'text', 'text': '請參考下方最新清單。'})
+                            page = min(max(page, 1), max_page)
+                        messages.append(build_delete_records_flex(username, records, limit=limit, page=page))
+                    except Exception as e:
+                        print(f"[ERROR] Failed to build delete page: {e}")
+                        messages.append({'type': 'text', 'text': '❌ 分頁失敗，請稍後再試'})
+
+                elif action == 'view_page':
+                    # 查看清單分頁（舊泡泡的上一頁/下一頁：頁數過期時顯示最新清單）
+                    try:
+                        page = int(params.get('page', '1'))
+                    except Exception:
+                        page = 1
+                    try:
+                        user_profile = get_user_profile(user_id)
+                        username = user_profile.get('displayName', '未知用戶') if user_profile else '未知用戶'
+                        records = query_user_food_records(user_id)
+                        limit = 5
+                        max_page = max(1, (len(records) + limit - 1) // limit) if records else 1
+                        if page < 1 or page > max_page:
+                            messages.append({'type': 'text', 'text': '請參考下方最新清單。'})
+                            page = min(max(page, 1), max_page)
+                        messages.append(build_view_records_flex(username, records, limit=limit, page=page))
+                    except Exception as e:
+                        print(f"[ERROR] Failed to build view page: {e}")
+                        messages.append({'type': 'text', 'text': '❌ 分頁失敗，請稍後再試'})
+
                 # elif action == 'dislike':
                 #     # 處理負面回饋
                 #     messages.append({'type': 'text', 'text': '收到，下次會避免推薦類似菜色！'})
@@ -1569,7 +1905,7 @@ def process_message_api():
         for i, msg in enumerate(messages):
             print(f"[DEBUG] Message {i+1}: type={msg.get('type', 'unknown')}")
             if msg.get('type') == 'text':
-                print(f"[DEBUG]   Text content: {msg.get('text', '')[:100]}...")
+                print(f"[DEBUG]   Text content: {str(msg.get('text', ''))[:100]}...")
             elif msg.get('type') == 'image':
                 print(f"[DEBUG]   Image URL: {msg.get('originalContentUrl', 'N/A')}")
             elif msg.get('type') == 'flex':
@@ -1586,6 +1922,8 @@ def process_message_api():
         
     except Exception as e:
         print(f"API 處理失敗: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'messages': [{'type': 'text', 'text': '系統繁忙'}]})
 
 
