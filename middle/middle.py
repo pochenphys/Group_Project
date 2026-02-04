@@ -939,6 +939,15 @@ def webhook():
                 # 圖片事件：只有在使用者已切換進食譜功能(ai_recipe)時，才會送到 CUSTOM_RECIPE_URL
                 # 其他狀態（例如記錄/查看/刪除）只送 CLOUD_RUN_URL，避免觸發 line-service 的文字推薦
                 current_state = user_state.get(user_id, 'main')
+                if current_state == 'main':
+                    # 未啟用任何功能時，引導用戶輸入功能提示詞
+                    line_client.reply_messages(reply_token, [{'type': 'text', 'text': (
+                        "📸 您上傳了圖片，但尚未啟用任何功能。\n\n"
+                        "請先輸入以下關鍵字啟用功能：\n"
+                        "• 「食譜功能」- 分析圖片並推薦食譜\n"
+                        "• 「記錄功能」- 記錄食物入庫。"
+                    )}])
+                    continue
                 if current_state == 'ai_recipe':
                     backends = [CLOUD_RUN_URL, CUSTOM_RECIPE_URL]
                 else:
@@ -978,6 +987,16 @@ def webhook():
                 else:
                     # 其他文字訊息，根據用戶狀態決定
                     current_state = user_state.get(user_id, 'main')
+                    if current_state == 'main':
+                        # 未啟用任何功能時，引導用戶輸入功能提示詞
+                        line_client.reply_messages(reply_token, [{'type': 'text', 'text': (
+                            "請輸入以下關鍵字開始使用：\n"
+                            "• 「食譜功能」- 上傳圖片獲得食譜\n"
+                            "• 「記錄功能」- 記錄食物入庫\n"
+                            "• 「查看功能」- 查看食物記錄\n"
+                            "• 「刪除功能」- 刪除或消耗記錄。"
+                        )}])
+                        continue
                     backends = [CLOUD_RUN_URL]
                     if current_state == 'ai_recipe':
                         backends.append(CUSTOM_RECIPE_URL)
